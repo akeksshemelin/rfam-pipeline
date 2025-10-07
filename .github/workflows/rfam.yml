@@ -1,35 +1,63 @@
 ﻿name: Rfam SQL Runner
+
 on:
   push:
     paths: [ "sql/**/*.sql" ]
   pull_request:
     paths: [ "sql/**/*.sql" ]
   workflow_dispatch: {}
+
 jobs:
   run-rfam-sql:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - run: sudo apt-get update -y && sudo apt-get install -y mysql-client
-      - id: changes
+      - name: Checkout (fetch full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # важный момент!
+
+      - name: Install MySQL client
         run: |
+          sudo apt-get update -y
+          sudo apt-get install -y mysql-client
+
+      - name: Determine changed SQL files
+        id: changes
+        run: |
+          set -e
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            git fetch origin ${{ github.base_ref }} --depth=1
-            range="origin/${{ github.base_ref }}...${{ github.sha }}"
+            git fetch origin "${{ github.base_ref }}" --depth=1
+            files=$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD | grep -E '^sql/.*\.sql$' || true)
           else
-            range="${{ github.event.before }}...${{ github.sha }}"
+            # обычный push: сравниваем с предыдущим коммитом
+            files=$(git diff --name-only HEAD^ HEAD | grep -E '^sql/.*\.sql$' || true)
           fi
-          files=$(git diff --name-only "$range" | grep -E '^sql/.*\.sql$' || true)
-          { echo "changed<<EOF"; echo "$files"; echo "EOF"; } >> "$GITHUB_OUTPUT"
-      - if: steps.changes.outputs.changed != ''
+          echo "Changed files:"
+          echo "$files"
+          {
+            echo "changed<<EOF"
+            echo "$files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run changed SQL
+        if: steps.changes.outputs.changed != ''
         run: |
           chmod +x scripts/run_sql.sh
           while IFS= read -r file; do
             [ -z "$file" ] && continue
+            echo ">>> Running $file"
             ./scripts/run_sql.sh "$file"
           done <<< "${{ steps.changes.outputs.changed }}"
-      - if: steps.changes.outputs.changed != ''
+
+      - name: Upload outputs
+        if: steps.changes.outputs.changed != ''
         uses: actions/upload-artifact@v4
-        with: { name: rfam-query-results, path: out/*.out, if-no-files-found: ignore }
-      - if: steps.changes.outputs.changed == ''
+        with:
+          name: rfam-query-results
+          path: out/*.out
+          if-no-files-found: ignore
+
+      - name: No SQL changes
+        if: steps.changes.outputs.changed == ''
         run: echo "No sql/*.sql files changed."
